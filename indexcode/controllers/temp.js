@@ -1,0 +1,520 @@
+const sanitizer = require('../utils/sanitizer');
+const { sendMessage, client } = require('../services/whatsappService');
+const aiService = require('../services/aiService');
+const logger = require('../utils/logger');
+const rateLimiter = require('../utils/rateLimiter');
+const pool = require('../config/db'); // ENABLED for DB operations
+const path = require('path');
+const fs = require('fs');
+const botStartTime = new Date();
+
+// Load FAQ text from input.txt
+const inputPath = path.join(__dirname, '../input.txt');
+let inputContent = '';
+try {
+    inputContent = fs.readFileSync(inputPath, 'utf-8');
+} catch (err) {
+    console.error('Error loading input.txt:', err.message);
+}
+
+// Session storage
+const userSessions = new Map();
+
+// Mapping from validation type to session storage key.
+const storeKeyMapping = {
+    'name': 'displayname',
+    'email': 'email',
+    'grade_level': 'grade',
+    'semester': 'semester',
+    'referral_source': 'referral'
+};
+
+/**
+ * Utility: determine user role from DB
+ */
+async function getUserRole(userPhone) {
+    const phone = userPhone.split('@')[0];
+    // DB queries commented out.
+    return 'visitor';
+}
+
+/**
+ * Read admission record from the database.
+ */
+async function readAdmission(userPhone) {
+    const phone = userPhone.split('@')[0];
+    const query = `
+      SELECT s.id, s.displayname, s.grade, s.semester, s.referral, s.regdate, s.enrolled,
+             sc.email, sc.mobile
+      FROM student s
+      JOIN studentcontactinfo sc ON s.id = sc.student_id
+      WHERE sc.mobile = ?`;
+    const [rows] = await pool.query(query, [phone]);
+    return rows;
+}
+
+/**
+ * Remove admission record from the database.
+ */
+async function removeAdmission(userPhone) {
+    const phone = userPhone.split('@')[0];
+    const contactQuery = `SELECT student_id FROM studentcontactinfo WHERE mobile = ?`;
+    const [contactRows] = await pool.query(contactQuery, [phone]);
+    if (contactRows.length === 0) {
+        return false;
+    }
+    const studentId = contactRows[0].student_id;
+    await pool.query(`DELETE FROM studentcontactinfo WHERE student_id = ?`, [studentId]);
+    await pool.query(`DELETE FROM student WHERE id = ?`, [studentId]);
+    return true;
+}
+
+/**
+ * Provide info based on user role.
+ */
+function getUserInfoRestrictions(userType) {
+    let allowedInfo = '';
+    let restrictedInfo = '';
+
+    if (userType === 'student') {
+        allowedInfo =
+            'The applicant may receive info on class schedules, exams, school resources, extracurriculars, and events.';
+        restrictedInfo =
+            "Do not share staff salaries, confidential policies, administrative reports, others' personal data, finances, or legal docs.";
+    } else if (userType === 'parent') {
+        allowedInfo =
+            'The applicant may get public info like admission procedures, school tour details, contact info, events, and directions.';
+        restrictedInfo =
+            'Do not share student-related data, financials, internal policies, or admin details.';
+    } else {
+        allowedInfo =
+            'The applicant may ask about the school, admissions, contact details, and location.';
+        restrictedInfo = 'Do not share any confidential or internal info.';
+    }
+
+    return { allowedInfo, restrictedInfo };
+}
+
+/**
+ * On client ready, perform initialization.
+ */
+client.on('ready', async () => {
+    console.log('IVY Help Bot is ready! Initialization complete.');
+});
+
+/**
+ * Get prompt message based on state.
+ */
+function getPromptForState(state, sessionData) {
+    switch (state) {
+        case 'admission_displayname':
+            return "Please provide the applicant's full name.";
+        case 'admission_email':
+            return "What is the applicant's email address?";
+        case 'admission_grade':
+            return "For which grade is the applicant applying? (e.g., Grade 3)";
+        case 'admission_semester':
+            return "Which semester is the applicant applying for? (1 or 2)";
+        case 'admission_referral':
+            return "How did the applicant hear about us? (Twitter, Facebook, Instagram, YouTube, Friend, Other)";
+        case 'admission_confirm':
+            return `Please review the applicant's details:
+- Name: ${sessionData.displayname || 'Not provided'}
+- Email: ${sessionData.email || 'Not provided'}
+- Grade: ${sessionData.grade || 'Not provided'}
+- Semester: ${sessionData.semester || 'Not provided'}
+- Referral: ${sessionData.referral || 'Not provided'}
+
+Are all details correct? (Yes/No)`;
+        case 'admission_change_or_cancel':
+            return 'Would the applicant like to change a detail or cancel the admission process? (Reply "Change" or "Cancel")';
+        case 'admission_choose_detail_to_change':
+            return 'Which detail should be changed? (Name, Email, Grade, Semester, Referral)';
+        case 'update_detail':
+            return `Please provide the new value for ${sessionData.detailToUpdate.charAt(0).toUpperCase() + sessionData.detailToUpdate.slice(1)}.`;
+        case 'meeting_offer':
+            return "Admission submitted. Would the applicant like to schedule a meeting now? (Yes/No)";
+        case 'meeting_show_slots':
+            return `Available slots (8:00 AM–3:00 PM, every 30 min, Sun–Thu):
+${sessionData.slotsList}
+Please choose a slot number:`;
+        case 'awaiting_continue':
+            return 'How can I further assist the applicant?';
+        default:
+            return '';
+    }
+}
+
+/**
+ * Helper: Check if validation passed.
+ */
+function isValidValidation(result) {
+    return result.toLowerCase() === 'valid' || !result.toLowerCase().endsWith('please try again.');
+}
+
+/**
+ * Main session handler.
+ */
+async function handleSession(userId, userMessage, session) {
+    if (session.intentDisabled) {
+        await sendMessage(userId, 'The applicant’s admission process is complete. Let us know if further help is needed.');
+        return;
+    }
+
+    switch (session.state) {
+        case 'admission_displayname':
+        case 'admission_email':
+        case 'admission_grade':
+        case 'admission_semester':
+        case 'admission_referral': {
+            let validationType;
+            switch (session.state) {
+                case 'admission_displayname':
+                    validationType = 'name';
+                    break;
+                case 'admission_email':
+                    validationType = 'email';
+                    break;
+                case 'admission_grade':
+                    validationType = 'grade_level';
+                    break;
+                case 'admission_semester':
+                    validationType = 'semester';
+                    break;
+                case 'admission_referral':
+                    validationType = 'referral_source';
+                    break;
+                default:
+                    validationType = 'text';
+            }
+            
+            // --- Local checks for grade and semester ---
+            if (validationType === 'grade_level') {
+                const gradeMatch = userMessage.match(/(\d+)/);
+                if (!gradeMatch) {
+                    await sendMessage(userId, "Invalid grade. Please try again.");
+                    userSessions.set(userId, session);
+                    break;
+                }
+                session.data[storeKeyMapping[validationType]] = `Grade ${gradeMatch[1]}`;
+                session.state = 'admission_semester';
+                await sendMessage(userId, getPromptForState(session.state, session.data));
+                userSessions.set(userId, session);
+                break;
+            }
+            if (validationType === 'semester') {
+                const semMatch = userMessage.match(/([12])/);
+                if (!semMatch) {
+                    await sendMessage(userId, "Invalid semester. Please try again.");
+                    userSessions.set(userId, session);
+                    break;
+                }
+                session.data[storeKeyMapping[validationType]] = `Semester ${semMatch[1]}`;
+                session.state = 'admission_referral';
+                await sendMessage(userId, getPromptForState(session.state, session.data));
+                userSessions.set(userId, session);
+                break;
+            }
+            // --- End local checks ---
+
+            const validationRes = await aiService.validateInput(validationType, userMessage);
+            if (isValidValidation(validationRes)) {
+                const storeKey = storeKeyMapping[validationType] || validationType;
+                if (validationType === 'name' || validationType === 'childName') {
+                    // Extract the validated name from the AI response
+                    let validatedName = validationRes;
+                    if (validatedName.toLowerCase().startsWith("valid ")) {
+                        validatedName = validatedName.substring(6).trim();
+                    }
+                    session.data[storeKey] = validatedName;
+                } else if (['email', 'phone', 'yes_no'].includes(validationType)) {
+                    session.data[storeKey] = userMessage.trim();
+                } else {
+                    session.data[storeKey] = validationRes;
+                }
+        
+                const nextStateMap = {
+                    'name': 'admission_email',
+                    'email': 'admission_grade',
+                    'grade_level': 'admission_semester',
+                    'semester': 'admission_referral',
+                    'referral_source': 'admission_confirm',
+                };
+                session.state = nextStateMap[validationType] || session.state;
+                await sendMessage(userId, getPromptForState(session.state, session.data));
+            } else {
+                await sendMessage(userId, validationRes);
+            }
+            userSessions.set(userId, session);
+            break;
+        }
+        case 'admission_confirm': {
+            let yesNo = await aiService.interpretYesNo(userMessage);
+            yesNo = yesNo.toLowerCase();
+            session.yesNoAttempts = session.yesNoAttempts || 0;
+            if (yesNo !== 'yes' && yesNo !== 'no') {
+                session.yesNoAttempts++;
+                if (session.yesNoAttempts >= 3) {
+                    await sendMessage(userId, 'Too many unclear responses. Ending the session.');
+                    userSessions.delete(userId);
+                    return;
+                } else {
+                    await sendMessage(userId, 'Response unclear. Please reply with "Yes" or "No".');
+                    userSessions.set(userId, session);
+                    return;
+                }
+            }
+            session.yesNoAttempts = 0; // reset on valid response
+
+            if (yesNo === 'yes') {
+                try {
+                    // DB insert code commented out.
+                    session.state = 'meeting_offer';
+                    session.data.studentId = 1;
+                    await sendMessage(userId, getPromptForState(session.state, session.data));
+                    userSessions.set(userId, session);
+                } catch (err) {
+                    console.error('Error during admission DB insert:', err.message);
+                    await sendMessage(userId, 'There was a problem saving the applicant’s data. Please try again later.');
+                    userSessions.delete(userId);
+                }
+            } else if (yesNo === 'no') {
+                session.state = 'admission_choose_detail_to_change';
+                await sendMessage(userId, getPromptForState(session.state, session.data));
+                userSessions.set(userId, session);
+            }
+            break;
+        }
+        case 'admission_choose_detail_to_change': {
+            const detail = userMessage.trim().toLowerCase();
+            const validDetails = ['name', 'email', 'grade', 'semester', 'referral'];
+            if (validDetails.includes(detail)) {
+                session.data.detailToUpdate = detail;
+                session.state = 'update_detail';
+                await sendMessage(userId, `Alright! Which ${detail.charAt(0).toUpperCase() + detail.slice(1)} should be updated?`);
+            } else {
+                await sendMessage(userId, 'Please choose a valid detail to change: Name, Email, Grade, Semester, Referral.');
+            }
+            userSessions.set(userId, session);
+            break;
+        }
+        case 'update_detail': {
+            const detailToUpdate = session.data.detailToUpdate;
+            let validationType;
+            switch (detailToUpdate) {
+                case 'name':
+                    validationType = 'name';
+                    break;
+                case 'email':
+                    validationType = 'email';
+                    break;
+                case 'grade':
+                    validationType = 'grade_level';
+                    break;
+                case 'semester':
+                    validationType = 'semester';
+                    break;
+                case 'referral':
+                    validationType = 'referral_source';
+                    break;
+                default:
+                    validationType = 'text';
+            }
+
+            const validationRes = await aiService.validateInput(validationType, userMessage);
+            if (isValidValidation(validationRes)) {
+                const storeKey = storeKeyMapping[validationType] || validationType;
+                if (validationType === 'name' || validationType === 'childName') {
+                    let validatedName = validationRes;
+                    if (validatedName.toLowerCase().startsWith("valid ")) {
+                        validatedName = validatedName.substring(6).trim();
+                    }
+                    session.data[storeKey] = validatedName;
+                } else if (['email', 'phone', 'yes_no'].includes(validationType)) {
+                    session.data[storeKey] = userMessage.trim();
+                } else {
+                    session.data[storeKey] = validationRes;
+                }
+                session.data.detailToUpdate = null;
+                session.state = 'admission_confirm';
+                await sendMessage(userId, `Thank you! The applicant's ${storeKey} has been updated to ${session.data[storeKey]}.`);
+                await sendMessage(userId, getPromptForState(session.state, session.data));
+            } else {
+                await sendMessage(userId, validationRes);
+            }
+            userSessions.set(userId, session);
+            break;
+        }
+        case 'meeting_offer': {
+            let yesNo = await aiService.interpretYesNo(userMessage);
+            yesNo = yesNo.toLowerCase();
+            session.yesNoAttempts = session.yesNoAttempts || 0;
+            if (yesNo !== 'yes' && yesNo !== 'no') {
+                session.yesNoAttempts++;
+                if (session.yesNoAttempts >= 3) {
+                    await sendMessage(userId, 'Too many unclear responses. Ending the session.');
+                    userSessions.delete(userId);
+                    return;
+                } else {
+                    await sendMessage(userId, 'Response unclear. Please reply with "Yes" or "No".');
+                    userSessions.set(userId, session);
+                    return;
+                }
+            }
+            session.yesNoAttempts = 0; // reset on valid response
+
+            if (yesNo === 'yes') {
+                session.state = 'meeting_show_slots';
+                userSessions.set(userId, session);
+                await sendMessage(userId, 'Meeting scheduling is currently disabled.');
+                userSessions.delete(userId);
+            } else if (yesNo === 'no') {
+                await sendMessage(userId, 'No worries! Let me know if further assistance is needed.');
+                userSessions.delete(userId);
+            }
+            break;
+        }
+        case 'meeting_show_slots': {
+            await sendMessage(userId, 'Meeting scheduling is currently disabled.');
+            break;
+        }
+        case 'awaiting_continue': {
+            const intent = await aiService.determineIntent(userMessage, session.state);
+            console.log(`Determined intent: ${intent} for user: ${userId}`);
+            if (intent === 'AdmissionFlow') {
+                session = { state: 'admission_displayname', data: {} };
+                userSessions.set(userId, session);
+                await sendMessage(userId, getPromptForState(session.state, session.data));
+            } else if (intent === 'AskFAQ') {
+                const answer = await aiService.answerQuestion(userMessage, inputContent);
+                await sendMessage(userId, answer || 'Could the applicant please rephrase the question?');
+            } else {
+                if (session.previousState) {
+                    const restoredState = session.previousState;
+                    session.state = restoredState;
+                    delete session.previousState;
+                    userSessions.set(userId, session);
+                    await sendMessage(userId, getPromptForState(restoredState, session.data));
+                } else {
+                    await sendMessage(userId, "Let's get started with joining the school. Is the applicant ready?");
+                    userSessions.delete(userId);
+                }
+            }
+            break;
+        }
+        default: {
+            const intent = await aiService.determineIntent(userMessage, session.state);
+            console.log(`Determined intent: ${intent} for user: ${userId}`);
+            if (intent === 'AdmissionFlow') {
+                session = { state: 'admission_displayname', data: {} };
+                userSessions.set(userId, session);
+                await sendMessage(userId, getPromptForState(session.state, session.data));
+            } else if (intent === 'AskFAQ') {
+                if (session && session.state) {
+                    session.previousState = session.state;
+                    session.state = 'awaiting_continue';
+                    userSessions.set(userId, session);
+                } else {
+                    session = { state: 'awaiting_continue', data: {} };
+                    userSessions.set(userId, session);
+                }
+                const answer = await aiService.answerQuestion(userMessage, inputContent);
+                console.log(`FAQ Answer: ${answer}`);
+                await sendMessage(userId, answer || 'Could the applicant please rephrase the question?');
+                await sendMessage(userId, getPromptForState(session.state, session.data));
+            } else {
+                await sendMessage(userId, 'Hello! The applicant can ask about admissions or any general question about the school.');
+                userSessions.delete(userId);
+            }
+            break;
+        }
+    }
+}
+
+/**
+ * Main message handler.
+ */
+client.on('message', async (msg) => {
+    try {
+        const userId = msg.from;
+        const userMessage = sanitizer.sanitizeInput(msg.body);
+        const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
+
+        if (msg.timestamp * 1000 < botStartTime.getTime()) {
+            console.log("Ignoring message from before the bot started");
+            return;
+        }
+        
+        if (rateLimiter.isRateLimited(userId)) {
+            await sendMessage(userId, 'The applicant is sending messages too quickly.');
+            return;
+        }
+
+        // Database read/remove commands
+        const lowerMessage = userMessage.toLowerCase();
+        if (lowerMessage.startsWith('read admission')) {
+            try {
+                const records = await readAdmission(userId);
+                if (records && records.length > 0) {
+                    let response = "The applicant's admission record:\n";
+                    records.forEach(record => {
+                        response += `Name: ${record.displayname}\nEmail: ${record.email}\nGrade: ${record.grade}\nSemester: ${record.semester}\nReferral: ${record.referral}\nRegistered: ${record.regdate}\nEnrolled: ${record.enrolled}\n\n`;
+                    });
+                    await sendMessage(userId, response);
+                } else {
+                    await sendMessage(userId, 'No admission record found for the applicant.');
+                }
+            } catch (err) {
+                console.error('Error reading admission:', err.message);
+                await sendMessage(userId, 'Error reading admission record.');
+            }
+            return;
+        }
+        if (lowerMessage.startsWith('remove admission')) {
+            try {
+                const success = await removeAdmission(userId);
+                if (success) {
+                    await sendMessage(userId, "The applicant's admission record has been removed.");
+                } else {
+                    await sendMessage(userId, 'No admission record found to remove.');
+                }
+            } catch (err) {
+                console.error('Error removing admission:', err.message);
+                await sendMessage(userId, 'Error removing admission record.');
+            }
+            return;
+        }
+
+        let session = userSessions.get(userId);
+        if (session && session.state) {
+            await handleSession(userId, userMessage, session);
+            return;
+        }
+
+        session = { state: '', data: {} };
+        const userRole = await getUserRole(userId);
+        const { allowedInfo, restrictedInfo } = getUserInfoRestrictions(userRole);
+
+        const intent = await aiService.determineIntent(userMessage, '');
+        console.log(`Determined intent: ${intent} for user: ${userId}`);
+
+        if (intent === 'AdmissionFlow') {
+            session = { state: 'admission_displayname', data: {} };
+            userSessions.set(userId, session);
+            await sendMessage(userId, getPromptForState(session.state, session.data));
+        } else if (intent === 'AskFAQ') {
+            session = { state: 'awaiting_continue', data: {} };
+            userSessions.set(userId, session);
+            const answer = await aiService.answerQuestion(userMessage, inputContent);
+            console.log(`FAQ Answer: ${answer}`);
+            await sendMessage(userId, answer || 'Could the applicant please rephrase the question?');
+            await sendMessage(userId, getPromptForState(session.state, session.data));
+        } else {
+            await sendMessage(userId, 'Hello! The applicant can ask about admissions or any general question about the school.');
+        }
+    } catch (err) {
+        console.error('Error handling message:', err.message);
+    }
+});
+
+module.exports = {};

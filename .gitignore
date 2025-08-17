@@ -1,0 +1,42 @@
+﻿venv/
+node_modules/
+**/.local-chromium/
+**/playwright/.cache/
+*.log
+# optional extras:
+dist/
+build/
+.DS_Store
+# secrets & env
+.env
+indexcode/.env
+*.env
+
+# auth/session caches
+.wwebjs_auth/
+.wwebjs_cache/
+
+# keys & certs (never commit private keys)
+*.key
+*.pem
+id_*
+hope
+yes
+
+# misc
+*.log
+
+
+@"
+# never commit secrets or sessions
+.env
+indexcode/.env
+.wwebjs_auth/
+.wwebjs_cache/
+# private keys
+*.key
+*.pem
+id_*
+hope
+yes
+"@ | Add-Content -Encoding utf8 .gitignore

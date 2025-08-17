@@ -1,0 +1,553 @@
+Below are two separate flowcharts created using [Mermaid syntax](https://mermaid.js.org/) that illustrate:
+
+1. A **Start-Stop Process** for the bot’s overall interaction flow using diamond (decision) and square (process) nodes.  
+2. A **Testing Flow** to verify all major features of the bot.
+
+You can copy these into your favorite Mermaid live editor (or include them in your documentation) and adjust details as needed.
+
+---
+
+### 1. Start-Stop Process Flowchart
+
+```mermaid
+flowchart TD
+  %% Start of interaction
+  Start([Start])
+  
+  %% Process: Receive and preprocess incoming message
+  A[Receive Message<br/>(Sanitize, Rate-limit, Log)]
+  
+  %% Decision: Check if a session already exists
+  B{Session Exists?}
+  
+  %% When session exists, continue with session handling
+  C[Handle Session<br/>(State-Based Processing)]
+  
+  %% When no session exists, determine intent and start new process
+  D[Determine Role & Restrictions]
+  E[Call AI Service<br/>(determineIntent)]
+  
+  %% Decision: Which intent did the AI determine?
+  F{Intent?}
+  
+  %% Branch: Admission process begins
+  G[Start Admission Flow<br/>(new or resume)]
+  %% Admission steps as a summary process:
+  H[Collect and Validate Data<br/>(Name, Email, Grade, etc.)]
+  I[Confirm Details]
+  J{Details Confirmed?}
+  K[Insert Data to DB & Move to Meeting Offer]
+  L[Ask to Schedule Meeting]
+  M[Show Available Slots<br/>(getAvailableSlots)]
+  N[Save Selected Slot<br/>(saveAppointment)]
+  
+  %% Branch: FAQ handling begins
+  O[FAQ Process:<br/>Answer Question<br/>(answerQuestion)]
+  P[Save & Restore Previous State<br/>(awaiting_continue)]
+  
+  %% Generic reply for unrecognized intent
+  Q[Send Generic Help Message]
+  
+  %% End of interaction
+  End([Stop])
+  
+  %% Linking flow
+  Start --> A
+  A --> B
+  B -- Yes --> C
+  B -- No --> D
+  D --> E
+  E --> F
+  
+  %% Intent branch for AdmissionFlow
+  F -- AdmissionFlow --> G
+  G --> H
+  H --> I
+  I --> J
+  J -- Yes --> K
+  K --> L
+  L --> M
+  M --> N
+  N --> End
+  J -- No --> H
+  
+  %% Intent branch for AskFAQ
+  F -- AskFAQ --> O
+  O --> P
+  P --> End
+  
+  %% Fallback generic response
+  F -- Unknown/Other --> Q
+  Q --> End
+```
+
+#### Explanation:
+- **Process boxes (squares/rectangles)** represent actions (receiving messages, validating input, saving data).  
+- **Decision diamonds** represent checks (session existence, intent type, confirmation status).  
+- The flow starts at **Start** and ends at **Stop** after completing a branch.
+
+---
+
+### 2. Testing All Features Flowchart
+
+```mermaid
+flowchart TD
+  %% Start testing process
+  TStart([Test Start])
+  
+  %% Test: Incoming message processing
+  A1[Test: Send Sample Message]
+  B1[Test: Message is sanitized, logged, and rate-limited]
+  
+  %% Test: Session detection
+  C1{Test: Existing Session?}
+  C1 -- Yes --> D1[Test: Retrieve session state and validate process path]
+  C1 -- No --> E1[Test: Determine user role and intent]
+  
+  %% Test: AdmissionFlow features
+  F1{Intent == AdmissionFlow?}
+  F1 -- Yes --> G1[Test: Start or Resume Admission Flow]
+  G1 --> H1[Test: Validate Name<br/>(Check for at least two words)]
+  H1 --> I1[Test: Validate Email]
+  I1 --> J1[Test: Validate Grade<br/>(standardize format)]
+  J1 --> K1[Test: Validate Semester]
+  K1 --> L1[Test: Validate Referral Source]
+  L1 --> M1[Test: Confirm details with AI<br/>(interpretYesNo)]
+  M1 --> N1{Test: Confirm = Yes?}
+  N1 -- Yes --> O1[Test: Insert data into DB]
+  O1 --> P1[Test: Offer Meeting Scheduling]
+  P1 --> Q1[Test: Retrieve and display meeting slots]
+  Q1 --> R1[Test: Save selected appointment]
+  
+  %% Test: FAQ Flow features
+  S1{Intent == AskFAQ?}
+  S1 -- Yes --> T1[Test: Answer FAQ using input text file]
+  T1 --> U1[Test: Check response format (bullet points, links)]
+  U1 --> V1[Test: Restore previous session state if applicable]
+  
+  %% Test: Generic fallback
+  W1[Test: Provide generic message for unrecognized intent]
+  
+  %% End testing process
+  EndTest([Test Complete])
+  
+  %% Linking testing flows sequentially
+  TStart --> A1
+  A1 --> B1
+  B1 --> C1
+  C1 -- Yes --> D1
+  C1 -- No --> E1
+  E1 --> F1
+  F1 -- Yes --> G1
+  G1 --> H1
+  H1 --> I1
+  I1 --> J1
+  J1 --> K1
+  K1 --> L1
+  L1 --> M1
+  M1 --> N1
+  N1 -- Yes --> O1
+  O1 --> P1
+  P1 --> Q1
+  Q1 --> R1
+  R1 --> EndTest
+  
+  F1 -- No --> S1
+  S1 -- Yes --> T1
+  T1 --> U1
+  U1 --> V1
+  V1 --> EndTest
+  
+  %% Fallback testing
+  F1 -- Unknown/Other --> W1
+  W1 --> EndTest
+```
+
+#### Explanation:
+- **Test nodes** (rectangles) describe each step where a feature is being verified (for example, message sanitation, session handling, input validation, database insertion, meeting slot scheduling, FAQ answering, and generic fallback).
+- **Decision diamonds** (e.g., "Test: Existing Session?" and "Intent == AdmissionFlow?") branch the test paths based on conditions.
+- The testing flow ensures every major feature of the bot is exercised and validated.  
+- The testing process starts at **Test Start** and ends at **Test Complete** when all paths have been verified.
+
+---Below is a refined version of your documentation—including two Mermaid flowcharts—and a comprehensive list of test texts you can send to exercise every feature.
+
+---
+
+## 1. Bot Interaction Flowchart
+
+```mermaid
+flowchart TD
+  %% Start of interaction
+  Start([Start])
+  
+  %% Process: Receive message (sanitize, rate-limit, log)
+  A[Receive Message<br/>(Sanitize, Rate-limit, Log)]
+  
+  %% Decision: Does a session already exist?
+  B{Session Exists?}
+  
+  %% If yes: continue with the existing session
+  C[Handle Session<br/>(State-Based Processing)]
+  
+  %% If no: determine user role & restrictions
+  D[Determine Role & Restrictions]
+  E[Call AI Service<br/>(determineIntent)]
+  
+  %% Decision: Which intent did the AI determine?
+  F{Intent?}
+  
+  %% Admission flow branch
+  G[Start Admission Flow<br/>(new or resume)]
+  H[Collect & Validate Data<br/>(Name, Email, Grade, etc.)]
+  I[Confirm Details]
+  J{Details Confirmed?}
+  K[Insert Data to DB & Move to Meeting Offer]
+  L[Ask to Schedule Meeting]
+  M[Show Available Slots<br/>(getAvailableSlots)]
+  N[Save Selected Slot<br/>(saveAppointment)]
+  
+  %% FAQ branch
+  O[FAQ Process:<br/>Answer Question<br/>(answerQuestion)]
+  P[Restore Previous State<br/>(awaiting_continue)]
+  
+  %% Generic fallback
+  Q[Send Generic Help Message]
+  
+  %% End of interaction
+  End([Stop])
+  
+  %% Linking flow
+  Start --> A
+  A --> B
+  B -- Yes --> C
+  B -- No --> D
+  D --> E
+  E --> F
+  
+  %% Admission branch
+  F -- AdmissionFlow --> G
+  G --> H
+  H --> I
+  I --> J
+  J -- Yes --> K
+  K --> L
+  L --> M
+  M --> N
+  N --> End
+  J -- No --> H
+  
+  %% FAQ branch
+  F -- AskFAQ --> O
+  O --> P
+  P --> End
+  
+  %% Fallback branch
+  F -- Unknown/Other --> Q
+  Q --> End
+```
+
+### Explanation
+- **Process nodes (squares)** perform actions (e.g., message reception, validation, database insertion).
+- **Decision nodes (diamonds)** branch based on session status, intent, and confirmation.
+- The flow starts at **Start** and ends at **Stop** after completing a branch.
+
+---
+
+## 2. Testing Flowchart for All Features
+
+```mermaid
+flowchart TD
+  %% Start testing process
+  TStart([Test Start])
+  
+  %% Test: Incoming message processing
+  A1[Test: Send Sample Message]
+  B1[Test: Verify message sanitation, logging, rate-limiting]
+  
+  %% Test: Session detection
+  C1{Test: Existing Session?}
+  C1 -- Yes --> D1[Test: Retrieve session state & validate path]
+  C1 -- No --> E1[Test: Determine user role & intent]
+  
+  %% Test: Admission Flow
+  F1{Intent == AdmissionFlow?}
+  F1 -- Yes --> G1[Test: Start/Resume Admission Flow]
+  G1 --> H1[Test: Validate Name<br/>(min. two words)]
+  H1 --> I1[Test: Validate Email]
+  I1 --> J1[Test: Validate Grade<br/>(standardized format)]
+  J1 --> K1[Test: Validate Semester]
+  K1 --> L1[Test: Validate Referral Source]
+  L1 --> M1[Test: Confirm details (interpretYesNo)]
+  M1 --> N1{Test: Confirmation = Yes?}
+  N1 -- Yes --> O1[Test: Insert data into DB]
+  O1 --> P1[Test: Offer Meeting Scheduling]
+  P1 --> Q1[Test: Retrieve & display meeting slots]
+  Q1 --> R1[Test: Save selected appointment]
+  
+  %% Test: FAQ Flow
+  F1 -- No --> S1{Intent == AskFAQ?}
+  S1 -- Yes --> T1[Test: Answer FAQ from input file]
+  T1 --> U1[Test: Validate response format (bullets, links)]
+  U1 --> V1[Test: Restore previous session state if needed]
+  
+  %% Test: Generic fallback
+  S1 -- Unknown/Other --> W1[Test: Send generic help message]
+  
+  %% End testing process
+  EndTest([Test Complete])
+  
+  %% Linking testing flows sequentially
+  TStart --> A1
+  A1 --> B1
+  B1 --> C1
+  C1 -- Yes --> D1
+  C1 -- No --> E1
+  E1 --> F1
+  F1 -- Yes --> G1
+  G1 --> H1
+  H1 --> I1
+  I1 --> J1
+  J1 --> K1
+  K1 --> L1
+  L1 --> M1
+  M1 --> N1
+  N1 -- Yes --> O1
+  O1 --> P1
+  P1 --> Q1
+  Q1 --> R1
+  R1 --> EndTest
+  
+  F1 -- No --> S1
+  S1 -- Yes --> T1
+  T1 --> U1
+  U1 --> V1
+  V1 --> EndTest
+  
+  S1 -- Unknown/Other --> W1
+  W1 --> EndTest
+```
+
+### Explanation
+- **Test nodes** describe each feature verification step (e.g., input validation, database insertion, meeting scheduling, FAQ answering).
+- **Decision nodes** branch tests based on session existence and intent.
+- The test process starts at **Test Start** and finishes at **Test Complete**.
+
+---
+Below is a refined version of your documentation—including two Mermaid flowcharts—and a comprehensive list of test texts you can send to exercise every feature.
+
+---
+
+## 1. Bot Interaction Flowchart
+
+```mermaid
+flowchart TD
+  %% Start of interaction
+  Start([Start])
+  
+  %% Process: Receive message (sanitize, rate-limit, log)
+  A[Receive Message<br/>(Sanitize, Rate-limit, Log)]
+  
+  %% Decision: Does a session already exist?
+  B{Session Exists?}
+  
+  %% If yes: continue with the existing session
+  C[Handle Session<br/>(State-Based Processing)]
+  
+  %% If no: determine user role & restrictions
+  D[Determine Role & Restrictions]
+  E[Call AI Service<br/>(determineIntent)]
+  
+  %% Decision: Which intent did the AI determine?
+  F{Intent?}
+  
+  %% Admission flow branch
+  G[Start Admission Flow<br/>(new or resume)]
+  H[Collect & Validate Data<br/>(Name, Email, Grade, etc.)]
+  I[Confirm Details]
+  J{Details Confirmed?}
+  K[Insert Data to DB & Move to Meeting Offer]
+  L[Ask to Schedule Meeting]
+  M[Show Available Slots<br/>(getAvailableSlots)]
+  N[Save Selected Slot<br/>(saveAppointment)]
+  
+  %% FAQ branch
+  O[FAQ Process:<br/>Answer Question<br/>(answerQuestion)]
+  P[Restore Previous State<br/>(awaiting_continue)]
+  
+  %% Generic fallback
+  Q[Send Generic Help Message]
+  
+  %% End of interaction
+  End([Stop])
+  
+  %% Linking flow
+  Start --> A
+  A --> B
+  B -- Yes --> C
+  B -- No --> D
+  D --> E
+  E --> F
+  
+  %% Admission branch
+  F -- AdmissionFlow --> G
+  G --> H
+  H --> I
+  I --> J
+  J -- Yes --> K
+  K --> L
+  L --> M
+  M --> N
+  N --> End
+  J -- No --> H
+  
+  %% FAQ branch
+  F -- AskFAQ --> O
+  O --> P
+  P --> End
+  
+  %% Fallback branch
+  F -- Unknown/Other --> Q
+  Q --> End
+```
+
+### Explanation
+- **Process nodes (squares)** perform actions (e.g., message reception, validation, database insertion).
+- **Decision nodes (diamonds)** branch based on session status, intent, and confirmation.
+- The flow starts at **Start** and ends at **Stop** after completing a branch.
+
+---
+
+## 2. Testing Flowchart for All Features
+
+```mermaid
+flowchart TD
+  %% Start testing process
+  TStart([Test Start])
+  
+  %% Test: Incoming message processing
+  A1[Test: Send Sample Message]
+  B1[Test: Verify message sanitation, logging, rate-limiting]
+  
+  %% Test: Session detection
+  C1{Test: Existing Session?}
+  C1 -- Yes --> D1[Test: Retrieve session state & validate path]
+  C1 -- No --> E1[Test: Determine user role & intent]
+  
+  %% Test: Admission Flow
+  F1{Intent == AdmissionFlow?}
+  F1 -- Yes --> G1[Test: Start/Resume Admission Flow]
+  G1 --> H1[Test: Validate Name<br/>(min. two words)]
+  H1 --> I1[Test: Validate Email]
+  I1 --> J1[Test: Validate Grade<br/>(standardized format)]
+  J1 --> K1[Test: Validate Semester]
+  K1 --> L1[Test: Validate Referral Source]
+  L1 --> M1[Test: Confirm details (interpretYesNo)]
+  M1 --> N1{Test: Confirmation = Yes?}
+  N1 -- Yes --> O1[Test: Insert data into DB]
+  O1 --> P1[Test: Offer Meeting Scheduling]
+  P1 --> Q1[Test: Retrieve & display meeting slots]
+  Q1 --> R1[Test: Save selected appointment]
+  
+  %% Test: FAQ Flow
+  F1 -- No --> S1{Intent == AskFAQ?}
+  S1 -- Yes --> T1[Test: Answer FAQ from input file]
+  T1 --> U1[Test: Validate response format (bullets, links)]
+  U1 --> V1[Test: Restore previous session state if needed]
+  
+  %% Test: Generic fallback
+  S1 -- Unknown/Other --> W1[Test: Send generic help message]
+  
+  %% End testing process
+  EndTest([Test Complete])
+  
+  %% Linking testing flows sequentially
+  TStart --> A1
+  A1 --> B1
+  B1 --> C1
+  C1 -- Yes --> D1
+  C1 -- No --> E1
+  E1 --> F1
+  F1 -- Yes --> G1
+  G1 --> H1
+  H1 --> I1
+  I1 --> J1
+  J1 --> K1
+  K1 --> L1
+  L1 --> M1
+  M1 --> N1
+  N1 -- Yes --> O1
+  O1 --> P1
+  P1 --> Q1
+  Q1 --> R1
+  R1 --> EndTest
+  
+  F1 -- No --> S1
+  S1 -- Yes --> T1
+  T1 --> U1
+  U1 --> V1
+  V1 --> EndTest
+  
+  S1 -- Unknown/Other --> W1
+  W1 --> EndTest
+```
+
+### Explanation
+- **Test nodes** describe each feature verification step (e.g., input validation, database insertion, meeting scheduling, FAQ answering).
+- **Decision nodes** branch tests based on session existence and intent.
+- The test process starts at **Test Start** and finishes at **Test Complete**.
+
+---
+
+## Test Input Scenarios
+
+Use these texts to simulate different paths in your bot:
+
+### 1. **Message Processing & Session Handling**
+- **Basic Greeting:**  
+  - "Hello"  
+  - "Hi there"
+
+- **Existing Session:**  
+  - "Resume my session"  
+  - "Continue our conversation"
+
+- **New Session:**  
+  - "Start a new session"  
+  - "Let's begin"
+
+### 2. **Admission Flow**
+- **Trigger Admission Intent:**  
+  - "I want to apply for admission"  
+  - "Start my admission process"  
+  - "I need to register"
+
+- **Data Collection & Validation:**  
+  - "My name is John Doe"  
+  - "Email: john.doe@example.com"  
+  - "Grade 12"  
+  - "Semester: Fall 2025"  
+  - "I found you through a friend"  
+
+- **Confirmation & Meeting Scheduling:**  
+  - "Yes, these details are correct"  
+  - "Schedule a meeting"  
+  - "I choose the 3:00 PM slot"
+
+- **Negative Confirmation (to retest data entry):**  
+  - "No, I need to change my details"
+
+### 3. **FAQ Flow**
+- **Trigger FAQ Intent:**  
+  - "What courses do you offer?"  
+  - "How do I reset my password?"  
+  - "Tell me about your pricing"
+
+### 4. **Generic Fallback**
+- **Unrecognized Intent:**  
+  - "asdfghjkl"  
+  - "blah blah"  
+  - "Random text with no clear intent"
+
+---
+
+These refined flowcharts and test texts cover every major feature of your bot. Copy the Mermaid diagrams into your live editor or documentation, and use the test texts to verify each branch of the interaction and testing process.
